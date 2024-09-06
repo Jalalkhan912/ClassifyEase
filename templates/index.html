@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClassifyEase - Model Training and Testing</title>
+    <style>
+        .file-counter { margin-left: 10px; font-style: italic; }
+        .help-text { font-size: 0.9em; color: #666; margin-top: 5px; }
+        .upload-button { display: none; margin-top: 10px; }
+        #status { margin-top: 20px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Train Your Model</h1>
+    <form id="trainingForm">
+        <label for="num_classes">Number of Classes:</label>
+        <input type="number" id="num_classes" name="num_classes" min="2" required>
+        <button type="button" onclick="generateClassFields()">Set Classes</button>
+      
+        <div id="class_fields"></div>
+      
+        <label for="conv_layers">Number of Conv Layers:</label>
+        <input type="number" id="conv_layers" name="conv_layers" min="1" max="5" required>
+        <button type="button" onclick="generateLayerFields()">Set Layers</button>
+      
+        <div id="layer_fields"></div>
+      
+        <button type="button" onclick="startTraining()">Start Training</button>
+    </form>
+    
+    <div id="status"></div>
+
+    <h1>Test Your Model</h1>
+    <form id="testForm">
+        <label for="test_images">Select Test Images:</label>
+        <input type="file" id="test_images" name="test_images[]" multiple accept="image/*" onchange="updateTestFileCounter()">
+        <span id="test_file_counter" class="file-counter"></span>
+        <button type="button" id="test_upload_button" class="upload-button" onclick="uploadTestImages()">Upload Test Images</button>
+        <div id="test_status"></div>
+    </form>
+
+    <script>
+        function updateFileCounter(input) {
+            const counter = input.nextElementSibling;
+            const uploadButton = counter.nextElementSibling;
+            counter.textContent = input.files.length > 0 ? `${input.files.length} file(s) selected` : '';
+            uploadButton.style.display = input.files.length > 0 ? 'inline-block' : 'none';
+        }
+
+        function generateClassFields() {
+            const numClasses = document.getElementById("num_classes").value;
+            const classFields = document.getElementById("class_fields");
+            classFields.innerHTML = '';
+
+            for (let i = 1; i <= numClasses; i++) {
+                classFields.innerHTML += `
+                    <label for="class_name_${i}">Class ${i} Name:</label>
+                    <input type="text" id="class_name_${i}" name="class_name_${i}" required><br>
+
+                    <label for="class_images_${i}">Select Images for Class ${i}:</label>
+                    <input type="file" id="class_images_${i}" name="class_images_${i}[]" multiple accept="image/*" onchange="updateFileCounter(this)">
+                    <span class="file-counter"></span>
+                    <button type="button" class="upload-button" onclick="uploadImages(${i})">Upload Images for Class ${i}</button>
+                    <div id="upload_status_${i}"></div><br><br>
+                `;
+            }
+        }
+
+        function generateLayerFields() {
+            const numLayers = document.getElementById("conv_layers").value;
+            const layerFields = document.getElementById("layer_fields");
+            layerFields.innerHTML = '';
+
+            for (let i = 1; i <= numLayers; i++) {
+                layerFields.innerHTML += `
+                    <label for="filters_${i}">Filters for Conv Layer ${i}:</label>
+                    <input type="number" id="filters_${i}" name="filters_${i}" min="16" max="256" required><br>
+                `;
+            }
+        }
+
+        function uploadImages(classIndex) {
+            const fileInput = document.getElementById(`class_images_${classIndex}`);
+            const statusDiv = document.getElementById(`upload_status_${classIndex}`);
+            const formData = new FormData();
+
+            formData.append('class_index', classIndex);
+            formData.append('class_name', document.getElementById(`class_name_${classIndex}`).value);
+            
+            for (let file of fileInput.files) {
+                formData.append('images', file);
+            }
+
+            statusDiv.textContent = 'Uploading...';
+
+            fetch('/upload_images', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    statusDiv.textContent = `Successfully uploaded ${data.count} images for Class ${classIndex}`;
+                    document.querySelector(`button[onclick="uploadImages(${classIndex})"]`).disabled = true;
+                } else {
+                    statusDiv.textContent = `Error: ${data.error}`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusDiv.textContent = 'An error occurred during upload.';
+            });
+        }
+
+        function startTraining() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = 'Preparing to start training...';
+
+            const formData = new FormData(document.getElementById('trainingForm'));
+
+            fetch('/train', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    statusDiv.textContent = "Error: " + data.error;
+                } else {
+                    statusDiv.textContent = `Training complete! Final accuracy: ${data.final_accuracy.toFixed(2)}`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusDiv.textContent = "An error occurred during training.";
+            });
+        }
+
+        function updateTestFileCounter() {
+            const testFileInput = document.getElementById("test_images");
+            const testCounter = document.getElementById("test_file_counter");
+            const testUploadButton = document.getElementById("test_upload_button");
+
+            testCounter.textContent = testFileInput.files.length > 0 ? `${testFileInput.files.length} file(s) selected` : '';
+            testUploadButton.style.display = testFileInput.files.length > 0 ? 'inline-block' : 'none';
+        }
+
+        function uploadTestImages() {
+            const testFileInput = document.getElementById("test_images");
+            const testStatusDiv = document.getElementById("test_status");
+            const formData = new FormData();
+
+            for (let file of testFileInput.files) {
+                formData.append('test_images', file);
+            }
+
+            testStatusDiv.textContent = 'Uploading test images...';
+
+            fetch('/test', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let resultText = 'Test results: ';
+                    data.results.forEach(result => {
+                        resultText += `<br>${result.image}: Classified as ${result.class}`;
+                    });
+                    testStatusDiv.innerHTML = resultText;
+                } else {
+                    testStatusDiv.textContent = `Error: ${data.error}`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                testStatusDiv.textContent = 'An error occurred during testing.';
+            });
+        }
+    </script>
+</body>
+</html>
