@@ -1,139 +1,163 @@
-from flask import Flask, request, jsonify, render_template
+import streamlit as st
 import os
 import tensorflow as tf
-from werkzeug.utils import secure_filename
-from sklearn.model_selection import train_test_split
-from tensorflow.keras.preprocessing.image import img_to_array, load_img
-from tensorflow.keras.utils import to_categorical
-from PIL import Image  # Import Image from PIL
 import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.image import img_to_array
+from tensorflow.keras.utils import to_categorical
+import io
 
-app = Flask(__name__)
-
+# Constants
+IMG_WIDTH, IMG_HEIGHT = 128, 128
 UPLOAD_FOLDER = 'uploads/'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB limit
 
+# Ensure upload folder exists
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-
-IMG_WIDTH, IMG_HEIGHT = 128, 128
-
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/upload_images', methods=['POST'])
-def upload_images():
-    if 'images' not in request.files:
-        return jsonify({'success': False, 'error': 'No file part'})
+# Streamlit app
+def main():
+    st.title("ClassifyEase - Model Training and Testing")
     
-    class_index = request.form.get('class_index')
-    class_name = request.form.get('class_name')
+    # Sidebar for navigation
+    page = st.sidebar.selectbox("Choose a page", ["Train Model", "Test Model"])
     
-    if not class_index or not class_name:
-        return jsonify({'success': False, 'error': 'Class information missing'})
+    if page == "Train Model":
+        train_model_page()
+    else:
+        test_model_page()
 
-    class_folder = os.path.join(UPLOAD_FOLDER, f'class_{class_index}_{class_name}')
-    os.makedirs(class_folder, exist_ok=True)
-
-    files = request.files.getlist('images')
-    count = 0
-    for file in files:
-        if file.filename != '':
-            filename = secure_filename(file.filename)
-            file.save(os.path.join(class_folder, filename))
-            count += 1
-
-    return jsonify({'success': True, 'count': count})
-
-@app.route('/train', methods=['POST'])
-def train_model():
-    try:
-        num_classes = int(request.form['num_classes'])
-        class_names = [request.form.get(f'class_name_{i}') for i in range(1, num_classes + 1) if request.form.get(f'class_name_{i}')]
-        
-        if len(class_names) != num_classes:
-            return jsonify({'error': 'Mismatch in number of classes and provided class names'}), 400
-
-        class_images = {name: [os.path.join(UPLOAD_FOLDER, f'class_{i+1}_{name}', f) 
-                               for f in os.listdir(os.path.join(UPLOAD_FOLDER, f'class_{i+1}_{name}'))]
-                        for i, name in enumerate(class_names)}
-
-        if not all(class_images.values()):
-            return jsonify({'error': 'No images found for one or more classes'}), 400
-
-        num_conv_layers = int(request.form['conv_layers'])
-        filters = [int(request.form[f'filters_{i}']) for i in range(1, num_conv_layers + 1)]
-
-        model = build_model(num_classes, num_conv_layers, filters)
-        X_train, X_test, y_train, y_test = preprocess_images(class_images, num_classes)
-        history = train_model(X_train, y_train, X_test, y_test, model)
-        
-        model.save('uploads/trained_model.h5')  # Save model after training
-
-        return jsonify(return_training_results(history))
+def train_model_page():
+    st.header("Train Your Model")
     
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
-
-@app.route('/test', methods=['POST'])
-def test_model():
-    try:
-        # Get test images from the request
-        test_images = request.files.getlist('test_images')
+    # Number of classes
+    num_classes = st.number_input("Number of Classes", min_value=2, value=2, step=1)
+    
+    # Class names and image upload
+    class_data = {}
+    for i in range(1, num_classes + 1):
+        st.subheader(f"Class {i}")
+        class_name = st.text_input(f"Class {i} Name", key=f"class_name_{i}")
+        uploaded_files = st.file_uploader(f"Upload images for Class {i}", accept_multiple_files=True, key=f"class_images_{i}")
         
-        # Check if any images were uploaded
-        if len(test_images) == 0:
-            return jsonify({"error": "No test images uploaded."})
+        if class_name and uploaded_files:
+            class_folder = os.path.join(UPLOAD_FOLDER, f'class_{i}_{class_name}')
+            os.makedirs(class_folder, exist_ok=True)
+            
+            for file in uploaded_files:
+                img = Image.open(file)
+                img.save(os.path.join(class_folder, file.name))
+            
+            class_data[class_name] = [os.path.join(class_folder, f.name) for f in uploaded_files]
+    
+    # Model architecture
+    st.subheader("Model Architecture")
+    num_conv_layers = st.number_input("Number of Conv Layers", min_value=1, max_value=5, value=2, step=1)
+    filters = [st.number_input(f"Filters for Conv Layer {i+1}", min_value=16, max_value=256, value=32, step=16) for i in range(num_conv_layers)]
+    
+    # Training parameters
+    st.subheader("Training Parameters")
+    epochs = st.number_input("Number of Epochs", min_value=1, value=10, step=1)
+    batch_size = st.number_input("Batch Size", min_value=1, value=32, step=1)
+    
+    # Training button
+    if st.button("Start Training"):
+        if len(class_data) != num_classes:
+            st.error("Please upload images for all classes before training.")
+        else:
+            with st.spinner("Training in progress..."):
+                model = build_model(num_classes, num_conv_layers, filters)
+                X_train, X_test, y_train, y_test = preprocess_images(class_data, num_classes)
+                
+                # Create progress bar and metrics
+                progress_bar = st.progress(0)
+                epoch_text = st.empty()
+                metrics_text = st.empty()
+                
+                # Custom callback to update Streamlit components
+                class StreamlitCallback(tf.keras.callbacks.Callback):
+                    def on_epoch_end(self, epoch, logs=None):
+                        progress_bar.progress((epoch + 1) / epochs)
+                        epoch_text.text(f"Epoch {epoch + 1}/{epochs}")
+                        metrics_text.text(f"Loss: {logs['loss']:.4f}, Accuracy: {logs['accuracy']:.4f}, "
+                                          f"Val Loss: {logs['val_loss']:.4f}, Val Accuracy: {logs['val_accuracy']:.4f}")
+                
+                history = train_model(X_train, y_train, X_test, y_test, model, epochs, batch_size, StreamlitCallback())
+                model.save(os.path.join(UPLOAD_FOLDER, 'trained_model.h5'))
+                
+                st.success("Training complete!")
+                
+                # Display final metrics
+                st.write(f"Final training accuracy: {history.history['accuracy'][-1]:.4f}")
+                st.write(f"Final training loss: {history.history['loss'][-1]:.4f}")
+                st.write(f"Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
+                st.write(f"Final validation loss: {history.history['val_loss'][-1]:.4f}")
+                
+                # Plot and display training history
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+                
+                ax1.plot(history.history['accuracy'], label='Training Accuracy')
+                ax1.plot(history.history['val_accuracy'], label='Validation Accuracy')
+                ax1.set_title('Model Accuracy')
+                ax1.set_xlabel('Epoch')
+                ax1.set_ylabel('Accuracy')
+                ax1.legend()
+                
+                ax2.plot(history.history['loss'], label='Training Loss')
+                ax2.plot(history.history['val_loss'], label='Validation Loss')
+                ax2.set_title('Model Loss')
+                ax2.set_xlabel('Epoch')
+                ax2.set_ylabel('Loss')
+                ax2.legend()
+                
+                st.pyplot(fig)
+                
+                # Download button for the trained model
+                model_path = os.path.join(UPLOAD_FOLDER, 'trained_model.h5')
+                with open(model_path, "rb") as file:
+                    btn = st.download_button(
+                        label="Download Trained Model",
+                        data=file,
+                        file_name="trained_model.h5",
+                        mime="application/octet-stream"
+                    )
 
-        # Preprocess the test images
-        processed_images = []
-        for img in test_images:
-            image = Image.open(img)
-            image = image.resize((IMG_WIDTH, IMG_HEIGHT))  # Resize to match model input
-            image = img_to_array(image) / 255.0  # Normalize if necessary
-            processed_images.append(image)
-
-        # Convert list to numpy array
-        processed_images = np.array(processed_images)
-
-        # Load the trained model
-        model = tf.keras.models.load_model('uploads/trained_model.h5')
-
-        # Dynamically determine class names from the upload directory
-        class_names = []
-        for folder_name in os.listdir(UPLOAD_FOLDER):
-            if os.path.isdir(os.path.join(UPLOAD_FOLDER, folder_name)):
-                class_names.append(folder_name)
-
-        # Ensure class names are available
-        if not class_names:
-            return jsonify({"error": "No class names found. Ensure that the model was trained with proper class directories."})
-
-        # Predict using the model
-        predictions = model.predict(processed_images)
-
-        # Process predictions
-        results = []
-        for idx, prediction in enumerate(predictions):
-            predicted_class_index = np.argmax(prediction)  # Get class with highest probability
-            results.append({
-                "image": test_images[idx].filename,
-                "class": class_names[predicted_class_index]  # Map to class name
-            })
-
-        # Return the results as JSON
-        return jsonify({"success": True, "results": results})
-
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-def load_model():
-    # Load the saved model
-    return tf.keras.models.load_model('uploads/trained_model.h5')
+def test_model_page():
+    st.header("Test Your Model")
+    
+    uploaded_files = st.file_uploader("Upload test images", accept_multiple_files=True)
+    
+    if uploaded_files and st.button("Run Test"):
+        model_path = os.path.join(UPLOAD_FOLDER, 'trained_model.h5')
+        if not os.path.exists(model_path):
+            st.error("No trained model found. Please train a model first.")
+        else:
+            model = tf.keras.models.load_model(model_path)
+            
+            results = []
+            for file in uploaded_files:
+                img = Image.open(file)
+                img = img.resize((IMG_WIDTH, IMG_HEIGHT))
+                img_array = img_to_array(img) / 255.0
+                img_array = np.expand_dims(img_array, axis=0)
+                
+                prediction = model.predict(img_array)
+                class_idx = np.argmax(prediction[0])
+                
+                # Get class names from the upload directory
+                class_names = [name for name in os.listdir(UPLOAD_FOLDER) if os.path.isdir(os.path.join(UPLOAD_FOLDER, name)) and name.startswith('class_')]
+                class_names.sort(key=lambda x: int(x.split('_')[1]))
+                
+                results.append({
+                    "image": file.name,
+                    "class": class_names[class_idx].split('_', 2)[-1]
+                })
+            
+            st.subheader("Test Results")
+            for result in results:
+                st.write(f"{result['image']}: Classified as {result['class']}")
 
 def build_model(num_classes, num_conv_layers, filters):
     model = tf.keras.models.Sequential()
@@ -150,11 +174,12 @@ def build_model(num_classes, num_conv_layers, filters):
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
-def preprocess_images(class_images, num_classes, img_size=(IMG_WIDTH, IMG_HEIGHT)):
+def preprocess_images(class_images, num_classes):
     X, y = [], []
     for class_index, (class_name, image_paths) in enumerate(class_images.items()):
         for image_path in image_paths:
-            image = load_img(image_path, target_size=img_size)
+            image = Image.open(image_path)
+            image = image.resize((IMG_WIDTH, IMG_HEIGHT))
             image = img_to_array(image) / 255.0
             X.append(image)
             y.append(class_index)
@@ -168,17 +193,9 @@ def preprocess_images(class_images, num_classes, img_size=(IMG_WIDTH, IMG_HEIGHT
 
     return X_train, X_test, y_train, y_test
 
-def train_model(X_train, y_train, X_test, y_test, model, epochs=10, batch_size=32):
+def train_model(X_train, y_train, X_test, y_test, model, epochs, batch_size, callback):
     return model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                     epochs=epochs, batch_size=batch_size)
-
-def return_training_results(history):
-    return {
-        'final_accuracy': float(history.history['accuracy'][-1]),
-        'final_loss': float(history.history['loss'][-1]),
-        'val_accuracy': float(history.history['val_accuracy'][-1]),
-        'val_loss': float(history.history['val_loss'][-1])
-    }
+                     epochs=epochs, batch_size=batch_size, callbacks=[callback])
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    main()
