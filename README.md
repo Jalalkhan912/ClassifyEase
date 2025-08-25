@@ -48,8 +48,8 @@ ClassifyEase uses a flexible CNN architecture that adapts to your specifications
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/classifyease.git
-   cd classifyease
+   git clone https://github.com/Jalalkhan912/ClassifyEase.git
+   cd ClassifyEase
    ```
 
 2. **Install dependencies**
